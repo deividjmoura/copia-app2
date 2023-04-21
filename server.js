@@ -2,41 +2,68 @@ const express = require('express');
 const path = require('path');
 const multer = require('multer');
 const fs = require('fs-extra');
+const admin = require('firebase-admin');
 
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    const now = new Date(); // Obtem a hora atual
-    const folderName = `uploads/${now.toISOString()}/`; // Cria um nome de pasta com a hora atual
-    fs.ensureDirSync(folderName); // Cria a pasta se ela não existir
-    cb(null, folderName); // Esse é o diretório onde os arquivos serão salvos
-  },
-  filename: function (req, file, cb) {
-    cb(null, file.originalname)
-  }
-});
+const serviceAccount = require('./serviceAccountKey.json'); // arquivo de chave de conta de serviço do Firebase
+
+const storage = multer.memoryStorage(); // armazenamento em memória
 
 const upload = multer({ storage: storage });
 
 const app = express();
 const port = process.env.PORT || 4000;
 
+// Inicializa o SDK do Firebase
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount)
+});
+
+// Obtém uma referência ao Firestore
+const db = admin.firestore();
+
 app.use(express.static(path.join(__dirname, 'build')));
+
 app.use(function(req, res, next) {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    next();
-  });
-  
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  next();
+});
+
 app.get('/', function (req, res) {
   res.sendFile(path.join(__dirname, 'build', 'index.html'));
 });
 
-app.post('/upload', upload.array('file'), function (req, res, next) {
-  // Os arquivos foram salvos no diretório especificado no storage
-  res.send('Arquivos enviados com sucesso!');
-});
+app.post('/upload', upload.array('file'), async function (req, res, next) {
+  // Verifica se há arquivos enviados
+  if (!req.files) {
+    res.status(400).send('Nenhum arquivo enviado!');
+    return;
+  }
 
+  try {
+    // Cria uma nova coleção 'uploads' no Firestore, se ela ainda não existir
+    await db.collection('uploads').doc().set({});
+
+    // Para cada arquivo enviado, cria um novo documento no Firestore com as informações do arquivo
+    req.files.forEach(async file => {
+      const now = new Date();
+      const fileName = `${now.toISOString()}_${file.originalname}`;
+      const filePath = `uploads/${fileName}`;
+      const fileRef = db.collection('uploads').doc().collection('files').doc();
+      await fileRef.set({
+        name: file.originalname,
+        path: filePath,
+        timestamp: admin.firestore.Timestamp.now()
+      });
+    });
+
+    res.send('Arquivos enviados com sucesso!');
+  } catch (error) {
+    console.error(error);
+    res.status(500).send('Erro ao enviar arquivos!');
+  }
+});
 
 // Remove pastas mais antigas do que 1 dia
 setInterval(() => {
@@ -57,6 +84,5 @@ setInterval(() => {
 }, 24 * 60 * 60 * 1000); // Executa a cada 24 horas
 
 app.listen(port, '0.0.0.0', function () {
-    console.log(`Servidor rodando na porta ${port}!`);
-  });
-  
+  console.log(`Servidor rodando na porta ${port}!`);
+});
